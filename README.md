@@ -8,18 +8,106 @@
 - 사용할 Codex 또는 Claude Code를 먼저 설치하세요. Specify CLI가 없을 때는 [uv](https://docs.astral.sh/uv/getting-started/installation/)를 사용합니다.
 - 새 프로젝트 설정에는 `init --integration`과 `integration status --json`을 지원하는 CLI가 필요합니다. 기존 프로젝트에 에이전트를 추가하려면 `integration install`과 해당 조합의 멀티 연동도 지원해야 합니다.
 
-## 전역 설치
+## 설치 · 업데이트 · 제거
 
-이 저장소의 `skills/speckit-start` 폴더를 원하는 에이전트의 스킬 디렉터리에 복사하세요. `SKILL.md`와 `guard.py`가 같은 폴더에 있어야 합니다. 복사 전에 대상과 상위 경로에 심볼릭 링크나 정션이 없는지 확인하세요. 기존 설치를 갱신한다면 변경 내용을 검토한 뒤 두 파일을 함께 교체하세요.
+`skills/speckit-start` 폴더의 `SKILL.md`와 `guard.py` 두 파일을 사용하는 에이전트의 스킬 폴더에 넣으면 설치가 끝납니다. 두 파일은 항상 같은 폴더에 같은 버전으로 두세요.
 
-| 도구 | 사용자 스킬 경로 | 프로젝트 대화창에서 실행 |
+| 도구 | 스킬 폴더 | 프로젝트 대화창에서 실행 |
 | --- | --- | --- |
-| Codex | `~/.agents/skills/speckit-start/SKILL.md` | `$speckit-start` |
-| Claude Code | `~/.claude/skills/speckit-start/SKILL.md` | `/speckit-start` |
+| Claude Code | `~/.claude/skills/speckit-start` | `/speckit-start` |
+| Codex | `~/.agents/skills/speckit-start` | `$speckit-start` |
 
-사용할 프로젝트를 각 도구에서 열고 해당 명령을 입력합니다.
+> 스킬 폴더와 그 상위 경로에 심볼릭 링크나 정션이 없는지 먼저 확인하세요. 이 스킬은 링크로 연결하지 않고 파일을 복사해서 설치합니다.
+
+### 설치
+
+**Windows (PowerShell)** — Claude Code
+
+```powershell
+$d = "$HOME\.claude\skills\speckit-start"
+$u = "https://raw.githubusercontent.com/JEONJEA/SpecKit-Starter/main/skills/speckit-start"
+New-Item -ItemType Directory -Force $d | Out-Null
+foreach ($f in "SKILL.md", "guard.py") { Invoke-WebRequest "$u/$f" -OutFile "$d\$f" -UseBasicParsing }
+```
+
+**Windows (PowerShell)** — Codex
+
+```powershell
+$d = "$HOME\.agents\skills\speckit-start"
+$u = "https://raw.githubusercontent.com/JEONJEA/SpecKit-Starter/main/skills/speckit-start"
+New-Item -ItemType Directory -Force $d | Out-Null
+foreach ($f in "SKILL.md", "guard.py") { Invoke-WebRequest "$u/$f" -OutFile "$d\$f" -UseBasicParsing }
+```
+
+**macOS · Linux** — Codex는 `d`를 `~/.agents/skills/speckit-start`로 바꾸세요.
+
+```bash
+d=~/.claude/skills/speckit-start
+u=https://raw.githubusercontent.com/JEONJEA/SpecKit-Starter/main/skills/speckit-start
+mkdir -p "$d" && for f in SKILL.md guard.py; do curl -fsSL "$u/$f" -o "$d/$f"; done
+```
+
+설치한 뒤 사용할 프로젝트에서 Claude Code나 Codex를 새로 열고 `/speckit-start` 또는 `$speckit-start`를 입력합니다.
+
+### 업데이트
+
+설치 명령을 그대로 다시 실행하면 두 파일이 최신 버전으로 함께 바뀝니다. 실행 전에 [커밋 기록](https://github.com/JEONJEA/SpecKit-Starter/commits/main/skills/speckit-start)에서 바뀐 내용을 확인하고, 업데이트한 뒤에는 새 세션을 여세요.
+
+저장소를 클론해 두었다면 최신 내용을 받은 뒤 두 파일을 복사해도 됩니다. Codex는 경로의 `.claude`를 `.agents`로 바꾸세요.
+
+```powershell
+git pull
+Copy-Item skills\speckit-start\SKILL.md, skills\speckit-start\guard.py "$HOME\.claude\skills\speckit-start\" -Force
+```
+
+### 설치 확인
+
+```powershell
+Get-ChildItem "$HOME\.claude\skills\speckit-start", "$HOME\.agents\skills\speckit-start" -ErrorAction SilentlyContinue
+```
+
+사용하는 도구의 폴더에 `SKILL.md`와 `guard.py`가 모두 보이면 됩니다. 새 세션에서 `/speckit-start`(Codex는 `$speckit-start`)가 목록에 나타나는지도 확인하세요.
+
+### 제거
+
+스킬 폴더만 지웁니다. 이미 설정한 프로젝트의 `.specify`, `.agents`, `.claude` 파일은 그대로 남습니다.
+
+```powershell
+Remove-Item "$HOME\.claude\skills\speckit-start" -Recurse   # Claude Code
+Remove-Item "$HOME\.agents\skills\speckit-start" -Recurse   # Codex
+```
 
 ## 스킬 실행 과정
+
+```mermaid
+flowchart TD
+    A["/speckit-start 실행"] --> B{"specify CLI가<br/>설치되어 있나?"}
+    B -- 예 --> C{"출처·무결성<br/>검증 통과?"}
+    C -- 아니오 --> STOP["중단하고 원인 보고"]
+    B -- 아니오 --> D["PyPI 최신 안정 버전 조회"]
+    D --> E{"CLI 설치 승인?"}
+    E -- 취소 --> END["종료"]
+    E -- 승인 --> F["uv로 specify-cli 설치"]
+    F --> G
+    C -- 예 --> G{"프로젝트에 Spec Kit이<br/>초기화되어 있나?"}
+    G -- 아니오 --> H["연동 선택<br/>Codex / Claude Code / 둘 다"]
+    G -- 예 --> J{"원하는 연동이<br/>모두 정상인가?"}
+    J -- 예 --> V
+    J -- 빠진 연동 있음 --> P
+    J -- 고장난 연동 있음 --> STOP
+    H --> P{"미리보기·설정 승인?"}
+    P -- 취소 --> END
+    P -- 승인 --> I["임시 폴더에서 미리보기"]
+    I --> L{"충돌이나 예상 밖<br/>변경이 있나?"}
+    L -- 있음 --> STOP
+    L -- 없음 --> M{"변경 계획 적용 승인?"}
+    M -- 취소 --> END
+    M -- 승인 --> N["specify init 또는<br/>integration install 실행"]
+    N --> V["설치 상태와 스킬 파일 검증"]
+    V --> R["결과 보고 및 사용할 명령 안내<br/>/speckit-specify 등"]
+```
+
+각 단계의 자세한 내용은 다음과 같습니다.
 
 1. PATH와 패키지 관리자 기록을 대조해 실행 파일의 출처를 확인한 뒤 `specify version`을 실행합니다. uv 설치는 도구 경로, 영수증, 배포 메타데이터, 런처 해시를 함께 확인합니다. Python 런처에 Authenticode 서명이 없다는 이유만으로 차단하지 않습니다. 설치가 필요하면 공식 PyPI에서 조회한 최신 안정 버전과 설치 위치를 제시하고 승인받습니다.
 2. 작업 범위 안에서 프로젝트 루트를 확인합니다. 외부 어댑터 설치 흔적을 먼저 점검하고, 안전하게 호출할 수 있을 때 `specify integration status --json`으로 상태를 확인합니다.
