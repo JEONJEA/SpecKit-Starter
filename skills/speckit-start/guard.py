@@ -622,6 +622,30 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def plan_id(plan, env):
+    """Fingerprint the operation and the child environment as separate halves."""
+    operation = digest(json.dumps(plan, sort_keys=True).encode())[:32]
+    environment = digest(json.dumps(env, sort_keys=True).encode())[:32]
+    return f"{operation}-{environment}"
+
+
+def approval_mismatch(approved, current):
+    if not re.fullmatch(r"[0-9a-f]{32}-[0-9a-f]{32}", approved):
+        return "Plan changed or was not approved: the approval is not a plan ID from this guard"
+    operation, environment = approved.split("-")
+    current_operation, current_environment = current.split("-")
+    if operation != current_operation and environment != current_environment:
+        reason = "the command, target files and child environment all differ from the approved plan"
+    elif operation != current_operation:
+        reason = "the command, arguments or target file state differ from the approved plan"
+    else:
+        reason = (
+            "the child environment (such as PATH or TEMP) differs from the approved plan. "
+            "Run the plan and apply with the same environment"
+        )
+    return f"Plan changed or was not approved: {reason}. Create a new plan and obtain approval again"
+
+
 def latest_stable():
     try:
         project = json.loads(fetch_release_bytes("https://pypi.org/pypi/specify-cli/json", 8 << 20))
@@ -661,14 +685,14 @@ def run(args):
     env.update(
         NoDefaultCurrentDirectoryInExePath="1", PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1",
     )
-    approval = digest(json.dumps([plan, env], sort_keys=True).encode())
+    approval = plan_id(plan, env)
     report = {key: value for key, value in plan.items() if key not in {
         "identity", "executable_identity", "before",
     }}
     if args.approve is None:
         return {"status": "plan", "plan_id": approval, **report}
     if args.approve != approval:
-        raise SetupError("Plan changed or was not approved")
+        raise SetupError(approval_mismatch(args.approve, approval))
     result = subprocess.run(
         plan["command"], cwd=plan["root"], env=env, shell=False,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

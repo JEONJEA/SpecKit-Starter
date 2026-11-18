@@ -255,8 +255,49 @@ class GuardTests(unittest.TestCase):
         args = self.init_args()
         args.approve = guard.run(args)["plan_id"]
         with patch.dict(os.environ, {"TMPDIR": str(self.scratch / "different-temp")}):
-            with self.assertRaisesRegex(guard.SetupError, "Plan changed"):
+            with self.assertRaisesRegex(guard.SetupError, "Plan changed.*child environment"):
                 guard.run(args)
+        self.invoke.assert_not_called()
+
+    def test_path_added_after_plan_is_reported_as_environment_change(self):
+        args = self.init_args()
+        with patch.dict(os.environ, {"PATH": str(self.scratch / "base")}):
+            args.approve = guard.run(args)["plan_id"]
+        added = os.pathsep.join((str(self.scratch / "base"), str(self.scratch / "Git" / "cmd")))
+        with patch.dict(os.environ, {"PATH": added}):
+            with self.assertRaises(guard.SetupError) as raised:
+                guard.run(args)
+        message = str(raised.exception)
+        self.assertIn("child environment", message)
+        self.assertIn("same environment", message)
+        self.assertNotIn(str(self.scratch), message)
+        self.invoke.assert_not_called()
+
+    def test_project_change_after_plan_is_reported_as_operation_change(self):
+        args = self.init_args()
+        args.approve = guard.run(args)["plan_id"]
+        (self.project / "notes.md").write_bytes(b"added after review")
+        with self.assertRaisesRegex(guard.SetupError, "Plan changed.*command, arguments or target file state"):
+            guard.run(args)
+        self.invoke.assert_not_called()
+
+    def test_plan_and_environment_change_together_are_both_reported(self):
+        args = self.init_args()
+        args.approve = guard.run(args)["plan_id"]
+        (self.project / "notes.md").write_bytes(b"added after review")
+        with patch.dict(os.environ, {"TMPDIR": str(self.scratch / "different-temp")}):
+            with self.assertRaisesRegex(guard.SetupError, "Plan changed.*all differ"):
+                guard.run(args)
+        self.invoke.assert_not_called()
+
+    def test_plan_id_is_stable_and_malformed_approval_is_identified(self):
+        args = self.init_args()
+        first = guard.run(args)["plan_id"]
+        self.assertRegex(first, r"^[0-9a-f]{32}-[0-9a-f]{32}$")
+        self.assertEqual(guard.run(args)["plan_id"], first)
+        args.approve = first.replace("-", "")
+        with self.assertRaisesRegex(guard.SetupError, "not a plan ID from this guard"):
+            guard.run(args)
         self.invoke.assert_not_called()
 
     def test_unsigned_uv_launcher_is_verified_from_receipt_record_and_official_cache(self):

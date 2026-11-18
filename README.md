@@ -41,6 +41,7 @@
 | --- | --- |
 | 설치했지만 `specify`를 찾지 못함 | `uv tool dir --bin`이 알려 주는 폴더에서 실행 파일을 확인하세요. uv로 설치한 경우 `uv tool update-shell`로 PATH를 설정한 뒤 터미널과 에이전트를 다시 열 수 있습니다. |
 | `uv tool list` 잠금 오류 또는 서명 없는 `specify.exe` | uv 실행 파일과 도구 설치 경로를 구분하세요. `uv tool dir`, `uv tool dir --bin`, `uv cache dir`의 경로, `uv-receipt.toml`, `specify-cli` 배포 메타데이터와 `RECORD`를 교차 확인합니다. 영수증에 출처가 없으면 uv 캐시의 정확한 wheel URL이 `files.pythonhosted.org`인지 확인합니다. 1.4.2는 공식 wheel에서 계산한 파일 해시로 오프라인 검증합니다. 그 밖의 버전은 공식 PyPI에서 해당 버전의 wheel을 메모리로 받아 SHA-256과 설치 파일 내용도 대조합니다. 이 확인에는 네트워크 연결이 필요합니다. 디렉터리를 `Get-FileHash`에 넘기지 말고, 출처나 런처 무결성을 확인할 수 없으면 중단하세요. 서명 없는 Python 런처라는 이유만으로 차단하지는 않습니다. |
+| `Plan changed or was not approved` | 승인한 계획과 적용 시점의 상태가 다르다는 뜻입니다. 오류 메시지가 명령·대상 파일이 바뀐 것인지, PATH나 `TEMP` 같은 자식 환경이 바뀐 것인지 알려 줍니다. 계획과 적용은 같은 환경에서 실행해야 합니다. Git처럼 추가로 필요한 경로가 있으면 계획을 만들기 전에 PATH에 넣고, 이미 승인했다면 새 계획을 만들어 다시 승인받으세요. |
 | `uv`가 없음 | [uv 공식 설치 안내](https://docs.astral.sh/uv/getting-started/installation/)에 따라 설치한 뒤 새 터미널에서 다시 실행하세요. |
 | 기존 CLI 또는 프로젝트 형식이 오래됨 | `specify version`과 [공식 업그레이드 가이드](https://github.github.com/spec-kit/upgrade.html)를 확인하세요. 프로젝트에 로컬 수정이 있다면 먼저 백업하거나 커밋해 두세요. |
 | 파일 충돌이나 쓰기 권한 오류 | 보고된 경로의 기존 파일과 권한을 확인하세요. 초기화가 도중에 실패했다면 다시 실행하기 전에 `.specify` 상태와 Git 변경 사항을 확인하세요. |
