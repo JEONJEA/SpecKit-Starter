@@ -11,6 +11,10 @@ For a dry-run or plan-only request, stop after read-only discovery and print the
 
 Use the bundled [guard.py](guard.py) through a vetted Python 3.11+ executable with `-I -B`. Resolve the helper from this skill's own directory. Its default is a read-only JSON plan. Treat `plan_id` as a fingerprint of the checked operation. Only repeat the same arguments with `--approve=<plan_id>` once the user has approved the matching plan. The ID covers the guard's child environment as well, so launch the plan and its apply with the same environment, including the same PATH, TEMP and TMP values. Decide which helper directories (for example Git) the CLI needs before creating the plan. If the environment must change afterwards, discard the old ID, create a new plan in the new environment and obtain approval again. An approval rejection or a revised plan ends the current apply attempt. The rejection states whether the command and files, the environment, or both changed; report that reason instead of guessing.
 
+## Language
+
+Write every user-facing message, question, `header`, option label and option description in the language the user writes in (for example Korean for a Korean-speaking user), including the final report and summaries of guard results or rejection reasons. Keep literal tokens unchanged: commands, flags, paths, versions, `plan_id`, JSON keys, integration keys and the **[SpecKit-Start]** heading. The English option labels below define meaning; translate them naturally (for example `Apply this plan` → `이 계획 적용`, `Cancel` → `취소`). A selection of a translated label counts the same as its English original.
+
 ## Asking the user
 
 Ask every question in this skill through the host's structured multiple-choice tool so the user picks an option instead of typing. This covers the integration choice, CLI install approval, network approval follow-ups, preview and project approval, revised-plan approval and guard plan approval. Ask one decision at a time.
