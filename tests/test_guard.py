@@ -1,6 +1,11 @@
 """Offline tests for the same operation guard the skill calls."""
 
 import importlib.util
+import base64
+import hashlib
+import io
+import zipfile
+import json
 import os
 from pathlib import Path
 import stat
@@ -25,6 +30,11 @@ class GuardTests(unittest.TestCase):
         self.scratch = Path(scratch.name)
         self.project = self.scratch / "테스트 프로젝트"
         self.project.mkdir()
+        self.preview = self.scratch / "미리 보기"
+        self.preview.mkdir()
+        self.files = (".specify/integration.json", ".agents/skills/speckit-specify/SKILL.md")
+        for name in self.files:
+            self.write_fixture(self.preview, name, "scratch output")
         self.home = self.scratch / "임시 사용자 홈"
         self.home.mkdir()
         self.tool = self.scratch / ("vetted.exe" if os.name == "nt" else "vetted")
@@ -36,8 +46,14 @@ class GuardTests(unittest.TestCase):
     def project_args(self, *extra, operation="init", agent="codex", root=None):
         return guard.parser().parse_args([
             "project", "--workspace", str(self.project), "--root", str(root or self.project),
-            "--executable", str(self.tool), "--operation", operation, "--agent", agent, *extra,
+            "--executable", str(self.tool), "--operation", operation, "--agent", agent,
+            "--preview", str(self.preview), *extra,
         ])
+
+    def write_fixture(self, root, name, content):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
 
     def init_args(self, *extra, **kwargs):
         return self.project_args(
@@ -52,6 +68,72 @@ class GuardTests(unittest.TestCase):
             "--version=1.4.2", "--tools", str(self.home / "uv tools"),
             "--bin", str(self.home / "uv bin"), "--cache", str(self.home / "uv cache"),
         ])
+
+    def uv_tool_args(self, *, include_launcher=True, list_version=None):
+        tools = self.scratch / "uv tools"
+        bin_dir = self.scratch / "uv bin"
+        tool_root = tools / "specify-cli"
+        dist_info = tool_root / (
+            "Lib/site-packages/specify_cli-1.4.2.dist-info" if os.name == "nt"
+            else "lib/python3.12/site-packages/specify_cli-1.4.2.dist-info"
+        )
+        launcher = bin_dir / ("specify.exe" if os.name == "nt" else "specify")
+        cache = self.scratch / "uv cache"
+        cache_record = cache / "wheels-v6/pypi/specify-cli/1.4.2-py3-none-any.http"
+        cache_record.parent.mkdir(parents=True, exist_ok=True)
+        cache_record.write_bytes(
+            b"https://files.pythonhosted.org/packages/fixture/specify_cli-1.4.2-py3-none-any.whl"
+        )
+        backing = tool_root / ("Scripts/specify.exe" if os.name == "nt" else "bin/specify")
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        backing.parent.mkdir(parents=True, exist_ok=True)
+        dist_info.mkdir(parents=True, exist_ok=True)
+        content = b"unsigned launcher fixture"
+        launcher.write_bytes(content)
+        backing.write_bytes(content)
+        digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode().rstrip("=")
+        record_path = os.path.relpath(backing, dist_info.parent).replace(os.sep, "/")
+        (dist_info / "RECORD").write_text(
+            f"{record_path},sha256={digest},{len(content)}\n", encoding="utf-8"
+        )
+        (dist_info / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: specify-cli\nVersion: 1.4.2\n", encoding="utf-8"
+        )
+        (dist_info / "entry_points.txt").write_text(
+            "[console_scripts]\nspecify = specify_cli:main\n", encoding="utf-8"
+        )
+        package = dist_info.parent / "specify_cli"
+        package.mkdir(exist_ok=True)
+        (package / "__init__.py").write_bytes(b"# official fixture")
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as wheel:
+            for path in (*dist_info.iterdir(), package / "__init__.py"):
+                wheel.write(path, path.relative_to(dist_info.parent).as_posix())
+        payload = buffer.getvalue()
+        filename = "specify_cli-1.4.2-py3-none-any.whl"
+        url = "https://files.pythonhosted.org/packages/fixture/" + filename
+        release = {"urls": [{"url": url, "filename": filename,
+                             "digests": {"sha256": hashlib.sha256(payload).hexdigest()}}]}
+        responses = {"https://pypi.org/pypi/specify-cli/1.4.2/json": json.dumps(release).encode(), url: payload}
+        self.enterContext(patch.object(guard, "PINNED_RELEASES", {}))
+        self.enterContext(patch.object(guard, "fetch_release_bytes", side_effect=lambda url, limit: responses[url]))
+        receipt = tool_root / "uv-receipt.toml"
+        receipt.write_text(
+            '[tool]\n'
+            'requirements = [{ name = "specify-cli" }]\n'
+            'entrypoints = [{ name = "specify", install-path = "'
+            + launcher.as_posix()
+            + '", from = "specify-cli" }]\n',
+            encoding="utf-8",
+        )
+        arguments = [
+            "verify-uv-tool", "--tools", str(tools), "--bin", str(bin_dir), "--cache", str(cache),
+        ]
+        if include_launcher:
+            arguments.extend(["--launcher", str(launcher)])
+        if list_version:
+            arguments.extend(["--list-version", list_version])
+        return guard.parser().parse_args(arguments), launcher, backing
 
     def test_plan_and_denied_approval_do_not_mutate(self):
         for args, directory in ((self.init_args(), self.project), (self.install_args(), self.home)):
@@ -73,6 +155,43 @@ class GuardTests(unittest.TestCase):
         with self.assertRaisesRegex(guard.SetupError, "already exists"):
             guard.run(args)
         self.assertEqual(collision.read_bytes(), b"existing file")
+        self.invoke.assert_not_called()
+
+    def test_incomplete_force_plan_does_not_start_cli(self):
+        self.write_fixture(self.project, "README.md", "user file")
+        args = self.project_args("--create=.specify/integration.json")
+        with self.assertRaisesRegex(guard.SetupError, "do not match the scratch preview"):
+            guard.run(args)
+        self.invoke.assert_not_called()
+
+    def test_missing_or_stale_shared_file_blocks_add(self):
+        version = "1.4.2"
+        tracked = ".specify/templates/spec-template.md"
+        stale = ".specify/scripts/powershell/old.ps1"
+        shared = {"version": version, "files": {tracked: "recorded hash"}}
+        options = {"speckit_version": version, "ai": "codex", "script": "ps"}
+        names = (".claude/skills/speckit-specify/SKILL.md", ".specify/integrations/claude.manifest.json")
+        for name in (*names, tracked):
+            self.write_fixture(self.preview, name, "scratch output")
+        for root in (self.preview, self.project):
+            self.write_fixture(root, guard.SHARED_MANIFEST, json.dumps(shared))
+            self.write_fixture(root, guard.INIT_OPTIONS, json.dumps(options))
+        self.write_fixture(self.project, ".specify/integration.json", json.dumps({
+            "default_integration": "codex", "installed_integrations": ["codex"],
+        }))
+        args = self.project_args(
+            *[f"--create={name}" for name in names],
+            *[f"--update={name}" for name in sorted(guard.METADATA)], operation="add", agent="claude",
+        )
+        with self.assertRaisesRegex(guard.SetupError, "Missing shared infrastructure"):
+            guard.run(args)
+        self.write_fixture(self.project, tracked, "retained template")
+        args.approve = guard.run(args)["plan_id"]
+        self.write_fixture(self.project, stale, "retained script")
+        shared["files"][stale] = "old hash"
+        self.write_fixture(self.project, guard.SHARED_MANIFEST, json.dumps(shared))
+        with self.assertRaisesRegex(guard.SetupError, "Shared infrastructure differs"):
+            guard.run(args)
         self.invoke.assert_not_called()
 
     def test_wrong_root_and_unsafe_output_path(self):
@@ -138,6 +257,164 @@ class GuardTests(unittest.TestCase):
         with patch.dict(os.environ, {"TMPDIR": str(self.scratch / "different-temp")}):
             with self.assertRaisesRegex(guard.SetupError, "Plan changed"):
                 guard.run(args)
+        self.invoke.assert_not_called()
+
+    def test_unsigned_uv_launcher_is_verified_from_receipt_record_and_official_cache(self):
+        args, _, _ = self.uv_tool_args(list_version="1.4.2")
+        result = guard.run(args)
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["package"], "specify-cli")
+        self.assertEqual(result["version"], "1.4.2")
+        self.assertEqual(result["index_source"], "files.pythonhosted.org (uv wheel cache)")
+        self.assertFalse(result["signature_required"])
+        self.invoke.assert_not_called()
+
+    def test_pinned_release_checks_content_without_network(self):
+        args, _, _ = self.uv_tool_args()
+        dist = guard.site_packages(Path(args.tools) / "specify-cli")
+        (dist / "WHEEL").write_bytes(b"fixture")
+        (dist / "licenses").mkdir()
+        (dist / "licenses/LICENSE").write_bytes(b"fixture")
+        with patch.dict(guard.PINNED_RELEASES, {"1.4.2": guard.installed_release_digest(dist)}):
+            guard.run(args)
+            (dist.parent / "specify_cli/__init__.py").write_bytes(b"changed")
+            with self.assertRaisesRegex(guard.SetupError, "differ from pinned"):
+                guard.run(args)
+        guard.fetch_release_bytes.assert_not_called()
+
+    def test_same_version_modified_package_is_rejected(self):
+        args, _, _ = self.uv_tool_args()
+        dist = guard.site_packages(Path(args.tools) / "specify-cli")
+        (dist.parent / "specify_cli/__init__.py").write_bytes(b"# different build")
+        with self.assertRaisesRegex(guard.SetupError, "differs from official wheel"):
+            guard.run(args)
+        self.invoke.assert_not_called()
+
+    def test_official_wheel_digest_mismatch_blocks_execution(self):
+        args, _, _ = self.uv_tool_args()
+        fetch = guard.fetch_release_bytes
+        def changed_download(url, limit):
+            data = fetch(url, limit)
+            return data + b"changed" if url.endswith(".whl") else data
+        with patch.object(guard, "fetch_release_bytes", side_effect=changed_download):
+            with self.assertRaisesRegex(guard.SetupError, "wheel digest mismatch"):
+                guard.run(args)
+        self.invoke.assert_not_called()
+
+    def test_unrecorded_origin_requires_matching_official_cache_evidence(self):
+        args, _, _ = self.uv_tool_args()
+        cache_record = Path(args.cache) / "wheels-v6/pypi/specify-cli/1.4.2-py3-none-any.http"
+        cache_record.unlink()
+        with self.assertRaisesRegex(guard.SetupError, "No matching uv wheel cache source record"):
+            guard.run(args)
+
+        cache_record.write_bytes(
+            b"https://packages.example/specify_cli-1.4.2-py3-none-any.whl"
+        )
+        with self.assertRaisesRegex(guard.SetupError, "nonofficial or mismatched"):
+            guard.run(args)
+        self.invoke.assert_not_called()
+
+    def test_official_receipt_index_is_sufficient_without_cache(self):
+        args, _, _ = self.uv_tool_args()
+        cache_record = Path(args.cache) / "wheels-v6/pypi/specify-cli/1.4.2-py3-none-any.http"
+        cache_record.unlink()
+        receipt = Path(args.tools) / "specify-cli" / "uv-receipt.toml"
+        with receipt.open("a", encoding="utf-8") as stream:
+            stream.write('\n[tool.options]\nindex = [{ url = "https://pypi.org/simple" }]\n')
+        result = guard.run(args)
+        self.assertEqual(result["index_source"], "pypi.org")
+        self.invoke.assert_not_called()
+
+    def test_inaccessible_cache_source_fails_closed(self):
+        args, _, _ = self.uv_tool_args()
+        cache_record = Path(args.cache) / "wheels-v6/pypi/specify-cli/1.4.2-py3-none-any.http"
+        real_read_bytes = Path.read_bytes
+
+        def deny_cache_read(path):
+            if path == cache_record:
+                raise PermissionError("synthetic cache access denial")
+            return real_read_bytes(path)
+
+        with patch.object(Path, "read_bytes", deny_cache_read):
+            with self.assertRaisesRegex(guard.SetupError, "Could not read uv wheel cache source record"):
+                guard.run(args)
+        self.invoke.assert_not_called()
+
+    def test_recorded_nonofficial_index_is_rejected(self):
+        args, _, _ = self.uv_tool_args()
+        receipt = Path(args.tools) / "specify-cli" / "uv-receipt.toml"
+        with receipt.open("a", encoding="utf-8") as stream:
+            stream.write('\n[tool.options]\nindex = [{ url = "https://packages.example/simple" }]\n')
+        with self.assertRaisesRegex(guard.SetupError, "nonofficial package index"):
+            guard.run(args)
+        self.invoke.assert_not_called()
+
+    def test_path_missing_and_uv_list_lock_failure_use_receipt(self):
+        args, launcher, _ = self.uv_tool_args(include_launcher=False)
+        with patch.dict(os.environ, {"PATH": ""}):
+            result = guard.run(args)
+        self.assertEqual(Path(result["launcher"]), launcher)
+        self.assertEqual(result["status"], "verified")
+        self.invoke.assert_not_called()
+
+    def test_uv_hash_access_denied_does_not_block_receipt_verification(self):
+        args, _, _ = self.uv_tool_args()
+        uv_executable = self.scratch / "uv.exe"
+        uv_executable.write_bytes(b"uv fixture")
+        real_read_bytes = Path.read_bytes
+
+        def deny_uv_read(path):
+            if path == uv_executable:
+                raise PermissionError("synthetic uv hash denial")
+            return real_read_bytes(path)
+
+        with patch.object(Path, "read_bytes", deny_uv_read):
+            self.assertEqual(guard.run(args)["status"], "verified")
+        self.invoke.assert_not_called()
+
+    def test_unregistered_launcher_and_inaccessible_candidate_fail_closed(self):
+        args, launcher, _ = self.uv_tool_args()
+        unknown = launcher.with_name("unknown.exe" if os.name == "nt" else "unknown")
+        unknown.write_bytes(b"unknown launcher")
+        args.launcher = str(unknown)
+        with self.assertRaisesRegex(guard.SetupError, "differs from the uv receipt"):
+            guard.run(args)
+
+        args.launcher = str(launcher)
+        real_read_bytes = Path.read_bytes
+
+        def deny_launcher_read(path):
+            if path == launcher:
+                raise PermissionError("synthetic launcher read denial")
+            return real_read_bytes(path)
+
+        with patch.object(Path, "read_bytes", deny_launcher_read):
+            with self.assertRaisesRegex(guard.SetupError, "Could not read resolved Specify launcher"):
+                guard.run(args)
+        self.invoke.assert_not_called()
+
+    def test_uv_list_version_receipt_and_record_must_match(self):
+        args, _, _ = self.uv_tool_args(list_version="1.4.3")
+        with self.assertRaisesRegex(guard.SetupError, "versions do not match"):
+            guard.run(args)
+
+        args, _, _ = self.uv_tool_args()
+        record = Path(args.tools) / "specify-cli" / (
+            "Lib/site-packages/specify_cli-1.4.2.dist-info/RECORD" if os.name == "nt"
+            else "lib/python3.12/site-packages/specify_cli-1.4.2.dist-info/RECORD"
+        )
+        record.write_text("../../Scripts/specify.exe,sha256=wrong,1\n", encoding="utf-8")
+        with self.assertRaisesRegex(guard.SetupError, "does not match its package RECORD"):
+            guard.run(args)
+        self.invoke.assert_not_called()
+
+    def test_missing_uv_receipt_fails_closed(self):
+        args, _, _ = self.uv_tool_args()
+        receipt = Path(args.tools) / "specify-cli" / "uv-receipt.toml"
+        receipt.unlink()
+        with self.assertRaisesRegex(guard.SetupError, "Missing or linked uv tool receipt"):
+            guard.run(args)
         self.invoke.assert_not_called()
 
     def test_install_failure_and_incomplete_install(self):

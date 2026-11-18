@@ -21,13 +21,15 @@
 
 ## 스킬 실행 과정
 
-1. PATH와 패키지 관리자 기록을 대조해 실행 파일의 출처를 확인한 뒤 `specify version`을 실행합니다. 설치가 필요하면 공식 PyPI 배포의 정확한 버전과 설치 위치를 제시하고 승인받습니다.
+1. PATH와 패키지 관리자 기록을 대조해 실행 파일의 출처를 확인한 뒤 `specify version`을 실행합니다. uv 설치는 도구 경로, 영수증, 배포 메타데이터, 런처 해시를 함께 확인합니다. Python 런처에 Authenticode 서명이 없다는 이유만으로 차단하지 않습니다. 설치가 필요하면 공식 PyPI에서 조회한 최신 안정 버전과 설치 위치를 제시하고 승인받습니다.
 2. 작업 범위 안에서 프로젝트 루트를 확인합니다. 외부 어댑터 설치 흔적을 먼저 점검하고, 안전하게 호출할 수 있을 때 `specify integration status --json`으로 상태를 확인합니다.
 3. 새 프로젝트에서는 **Codex + Claude Code**, **Codex만**, **Claude Code만** 중 원하는 연동을 선택합니다. 두 가지를 선택하면 Codex로 한 번 초기화하고 Claude Code를 추가합니다.
 4. 대상 경로와 명령, 예상 변경을 승인받습니다. 승인 후 임시 디렉터리에서 생성 경로를 확인하고 실제 프로젝트의 충돌과 링크를 검사합니다. 변경 범위가 늘어나면 다시 승인받습니다. Spec Kit 이벤트 등록을 끄고 기본 SDD 스킬을 구성합니다.
 5. 상태와 실제 스킬 파일을 다시 확인합니다. 준비가 끝나면 Codex에서는 `$speckit-specify`, `$speckit-clarify`, `$speckit-plan`, `$speckit-tasks`를, Claude Code에서는 같은 이름의 `/speckit-…` 명령을 사용할 수 있습니다.
 
 이미 초기화된 프로젝트에서는 별도 선택이 없으면 현재 실행 중인 에이전트를 기준으로 확인합니다. 예를 들어 Codex가 연동된 프로젝트에서 Claude Code로 실행하면, 승인을 받은 뒤 공식 `specify integration install claude` 명령으로 Claude Code 연동을 추가합니다. 프로젝트의 기본 에이전트는 Codex로 유지되며, 두 에이전트는 같은 프로젝트의 Spec Kit 설정과 SDD 문서를 사용합니다. 준비된 프로젝트에서는 상태 확인만으로 끝납니다.
+
+기존 프로젝트에 연동을 추가할 때는 현재 CLI 버전으로 만든 미리보기와 공용 파일 목록 및 스크립트 종류가 일치해야 합니다. 공용 파일이 누락됐거나 오래된 관리 파일이 남아 있으면 쓰기 전에 중단합니다. 연동과 초기화 옵션 메타데이터 외에 CLI가 교체하는 공용 파일 매니페스트도 승인 계획에 포함합니다.
 
 ### 변경 계획만 보기
 
@@ -38,6 +40,7 @@
 | 증상 | 확인할 사항 |
 | --- | --- |
 | 설치했지만 `specify`를 찾지 못함 | `uv tool dir --bin`이 알려 주는 폴더에서 실행 파일을 확인하세요. uv로 설치한 경우 `uv tool update-shell`로 PATH를 설정한 뒤 터미널과 에이전트를 다시 열 수 있습니다. |
+| `uv tool list` 잠금 오류 또는 서명 없는 `specify.exe` | uv 실행 파일과 도구 설치 경로를 구분하세요. `uv tool dir`, `uv tool dir --bin`, `uv cache dir`의 경로, `uv-receipt.toml`, `specify-cli` 배포 메타데이터와 `RECORD`를 교차 확인합니다. 영수증에 출처가 없으면 uv 캐시의 정확한 wheel URL이 `files.pythonhosted.org`인지 확인합니다. 1.4.2는 공식 wheel에서 계산한 파일 해시로 오프라인 검증합니다. 그 밖의 버전은 공식 PyPI에서 해당 버전의 wheel을 메모리로 받아 SHA-256과 설치 파일 내용도 대조합니다. 이 확인에는 네트워크 연결이 필요합니다. 디렉터리를 `Get-FileHash`에 넘기지 말고, 출처나 런처 무결성을 확인할 수 없으면 중단하세요. 서명 없는 Python 런처라는 이유만으로 차단하지는 않습니다. |
 | `uv`가 없음 | [uv 공식 설치 안내](https://docs.astral.sh/uv/getting-started/installation/)에 따라 설치한 뒤 새 터미널에서 다시 실행하세요. |
 | 기존 CLI 또는 프로젝트 형식이 오래됨 | `specify version`과 [공식 업그레이드 가이드](https://github.github.com/spec-kit/upgrade.html)를 확인하세요. 프로젝트에 로컬 수정이 있다면 먼저 백업하거나 커밋해 두세요. |
 | 파일 충돌이나 쓰기 권한 오류 | 보고된 경로의 기존 파일과 권한을 확인하세요. 초기화가 도중에 실패했다면 다시 실행하기 전에 `.specify` 상태와 Git 변경 사항을 확인하세요. |

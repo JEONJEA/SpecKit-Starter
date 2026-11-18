@@ -30,17 +30,24 @@ function Invoke-Specify {
     $Start.WorkingDirectory = $PWD.Path
     $Start.RedirectStandardOutput = $true
     $Start.RedirectStandardError = $true
-    $Start.Environment.Clear()
+    $Start.EnvironmentVariables.Clear()
     foreach ($Key in @(
         'PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'SYSTEMDRIVE',
         'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'TMPDIR',
         'XDG_CONFIG_HOME', 'XDG_DATA_HOME'
     )) {
         $Value = [Environment]::GetEnvironmentVariable($Key, 'Process')
-        if ($null -ne $Value) { $Start.Environment[$Key] = $Value }
+        if ($null -ne $Value) { $Start.EnvironmentVariables[$Key] = $Value }
     }
-    $Start.Environment['PYTHONDONTWRITEBYTECODE'] = '1'
-    foreach ($Argument in $args) { $Start.ArgumentList.Add($Argument) }
+    $Start.EnvironmentVariables['PYTHONDONTWRITEBYTECODE'] = '1'
+    if ($null -ne $Start.PSObject.Properties['ArgumentList']) {
+        foreach ($Argument in $args) { $Start.ArgumentList.Add($Argument) }
+    } elseif ($env:OS -eq 'Windows_NT') {
+        $QuotedArguments = @($args | ForEach-Object { ConvertTo-WindowsArgument $_ })
+        $Start.Arguments = $QuotedArguments -join ' '
+    } else {
+        throw 'This PowerShell runtime cannot pass a safe argument list to the fixture CLI.'
+    }
     $Process = [Diagnostics.Process]::Start($Start)
     try {
         $Output = $Process.StandardOutput.ReadToEndAsync()
@@ -54,6 +61,27 @@ function Invoke-Specify {
     } finally {
         $Process.Dispose()
     }
+}
+
+function ConvertTo-WindowsArgument([string]$Value) {
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+    $Builder = [Text.StringBuilder]::new()
+    [void]$Builder.Append('"')
+    $Backslashes = 0
+    foreach ($Character in $Value.ToCharArray()) {
+        if ($Character -eq '\') { $Backslashes++; continue }
+        if ($Character -eq '"') {
+            for ($Index = 0; $Index -lt (2 * $Backslashes + 1); $Index++) { [void]$Builder.Append('\') }
+            [void]$Builder.Append('"')
+        } else {
+            for ($Index = 0; $Index -lt $Backslashes; $Index++) { [void]$Builder.Append('\') }
+            [void]$Builder.Append($Character)
+        }
+        $Backslashes = 0
+    }
+    for ($Index = 0; $Index -lt (2 * $Backslashes); $Index++) { [void]$Builder.Append('\') }
+    [void]$Builder.Append('"')
+    $Builder.ToString()
 }
 
 function Assert-Setup([string]$DefaultAgent, [string[]]$ExpectedAgents) {
@@ -82,9 +110,11 @@ function Assert-Setup([string]$DefaultAgent, [string[]]$ExpectedAgents) {
 
 function Get-TreeSnapshot {
     $Files = @{}
+    $RootPrefix = [IO.Path]::GetFullPath($PWD.Path).TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
     foreach ($File in (Get-ChildItem -LiteralPath . -Recurse -Force -File | Get-FileHash)) {
-        $Relative = [IO.Path]::GetRelativePath($PWD.Path, $File.Path).Replace('\', '/')
-        $Files[$Relative] = $File.Hash
+        $FullPath = [IO.Path]::GetFullPath($File.Path)
+        $Relative = $FullPath.Substring($RootPrefix.Length).Replace('\', '/')
+        $Files[$Relative] = $File.Hash + ':' + (Get-Item -Force -LiteralPath $File.Path).LastWriteTimeUtc.Ticks
     }
     $Files
 }
@@ -102,10 +132,10 @@ function Assert-Tree($Before, $After) {
     }
 }
 
-function Invoke-ProjectStep($Operation, $Agent, $Creates, $Updates) {
+function Invoke-ProjectStep($Operation, $Agent, $Preview, $Creates, $Updates) {
     $Arguments = @(
         'project', "--root=$($PWD.Path)", "--workspace=$($PWD.Path)",
-        "--executable=$SpecifyCli", "--operation=$Operation", "--agent=$Agent"
+        "--executable=$SpecifyCli", "--operation=$Operation", "--agent=$Agent", "--preview=$Preview"
     )
     $Arguments += @($Creates | ForEach-Object { "--create=$_" })
     $Arguments += @($Updates | ForEach-Object { "--update=$_" })
@@ -175,38 +205,48 @@ try {
         }
         $Installed = Invoke-Guard @InstallArguments "--approve=$($InstallPlan.plan_id)"
         $LauncherName = if ($env:OS -eq 'Windows_NT') { 'specify.exe' } else { 'specify' }
-        $SpecifyCli = Join-Path $ToolBin $LauncherName
-        if ($Installed.status -ne 'command-completed' -or -not (Test-Path -LiteralPath $SpecifyCli)) {
+        $LauncherPath = Join-Path $ToolBin $LauncherName
+        if ($Installed.status -ne 'command-completed' -or -not (Test-Path -LiteralPath $LauncherPath)) {
             throw 'Fresh install did not provide the expected launcher'
         }
-        if ($env:OS -ne 'Windows_NT') {
-            $BackingCli = Join-Path $Tools 'specify-cli/bin/specify'
-            $ResolvedLauncher = (Get-Item -LiteralPath $SpecifyCli).ResolveLinkTarget($true)
-            if ($ResolvedLauncher.FullName -cne $BackingCli) { throw 'Unexpected uv launcher target' }
-            $SpecifyCli = $BackingCli
+        $VerifyArguments = @(
+            'verify-uv-tool', "--tools=$Tools", "--bin=$ToolBin", "--cache=$Cache", "--launcher=$LauncherPath",
+            "--list-version=$SpecifyVersion"
+        )
+        $Verified = Invoke-Guard @VerifyArguments
+        if ($Verified.status -ne 'verified' -or $Verified.version -ne $SpecifyVersion) {
+            throw 'Fresh uv installation did not match its receipt and package metadata'
         }
+        $SpecifyCli = $Verified.launcher
         $VersionOutput = Invoke-Specify version | Out-String
         if ($VersionOutput -notmatch [regex]::Escape($SpecifyVersion)) { throw 'Installed CLI version mismatch' }
-        Write-Output "PASS: installed Specify $SpecifyVersion in the isolated user home"
+        Write-Output "PASS: verified uv-managed Specify $SpecifyVersion with its receipt and package RECORD"
     } else {
         Invoke-Specify version | Out-Null
     }
     foreach ($Pair in @(@('codex', 'claude'), @('claude', 'codex'))) {
         $First, $Second = $Pair
         $Scaffold = Join-Path $TestRoot "미리 보기 $First"
+        $DualScaffold = Join-Path $TestRoot "연동 미리 보기 $First"
         $Project = Join-Path $TestRoot "테스트 프로젝트 $First"
         New-Item -ItemType Directory -Path $Scaffold, $Project | Out-Null
         Push-Location -LiteralPath $Scaffold
         try {
             Invoke-Specify init --here --non-interactive --integration $First --script $ScriptType $IntegrationOptions | Out-Null
             $InitPreview = Get-TreeSnapshot
+            Copy-Item -LiteralPath $Scaffold -Destination $DualScaffold -Recurse
+        } finally {
+            Pop-Location
+        }
+        Push-Location -LiteralPath $DualScaffold
+        try {
             Invoke-Specify integration install $Second $IntegrationOptions | Out-Null
             $DualPreview = Get-TreeSnapshot
         } finally {
             Pop-Location
         }
         $AddCreates = @($DualPreview.Keys | Where-Object { -not $InitPreview.ContainsKey($_) })
-        $AddUpdates = @('.specify/integration.json', '.specify/init-options.json')
+        $AddUpdates = @('.specify/integration.json', '.specify/init-options.json', '.specify/integrations/speckit.manifest.json')
         Push-Location -LiteralPath $Project
         try {
             $ExistingSettings = @('.codex/config.toml', '.claude/settings.json')
@@ -216,7 +256,7 @@ try {
                 Set-Content -LiteralPath $ExistingSettings[1] -Value '{"env":{"SMOKE_TEST":"1"}}' -NoNewline
             }
             $SettingsBefore = Get-ChildItem -LiteralPath . -Force -Recurse -File | Get-FileHash
-            Invoke-ProjectStep 'init' $First $InitPreview.Keys @()
+            Invoke-ProjectStep 'init' $First $Scaffold $InitPreview.Keys @()
             Assert-Setup $First @($First)
             if (Test-Path -LiteralPath $SkillPaths[$Second]) {
                 throw "Initialization unexpectedly created $Second skills"
@@ -230,7 +270,7 @@ try {
                 Get-ChildItem -LiteralPath '.specify/templates', $SkillPaths[$First] -Recurse -Force -File |
                     Get-FileHash
             )
-            Invoke-ProjectStep 'add' $Second $AddCreates $AddUpdates
+            Invoke-ProjectStep 'add' $Second $DualScaffold $AddCreates $AddUpdates
             Assert-Setup $First @($First, $Second)
             foreach ($File in $FilesToPreserve) {
                 if ($File -and (Get-FileHash -LiteralPath $File.Path).Hash -ne $File.Hash) {
