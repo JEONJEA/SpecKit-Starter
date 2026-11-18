@@ -4,29 +4,13 @@
 
 ## 지원 환경
 
-- Windows의 로컬 Codex 및 Claude Code를 기준으로 개발했습니다. macOS와 Linux에서도 같은 `SKILL.md`를 사용할 수 있으며, 생성되는 Spec Kit 스크립트는 운영체제에 맞게 선택합니다.
+- Windows의 로컬 Codex 및 Claude Code를 기준으로 개발했습니다. 스킬의 변경 계획을 확인하고 적용하려면 Python 3.11 이상이 필요합니다. macOS와 Linux에서는 운영체제에 맞는 Spec Kit 스크립트를 선택합니다.
 - 사용할 Codex 또는 Claude Code를 먼저 설치하세요. Specify CLI가 없을 때는 [uv](https://docs.astral.sh/uv/getting-started/installation/)를 사용합니다.
 - 새 프로젝트 설정에는 `init --integration`과 `integration status --json`을 지원하는 CLI가 필요합니다. 기존 프로젝트에 에이전트를 추가하려면 `integration install`과 해당 조합의 멀티 연동도 지원해야 합니다.
 
 ## 전역 설치
 
-이 저장소를 내려받고 저장소 루트에서 아래 PowerShell 명령을 실행하세요. `$SkillHomes`에서 설치할 도구의 경로를 선택할 수 있습니다. 실행 전에 선택한 대상과 그 상위 경로에 심볼릭 링크나 정션이 없는지 확인하세요. 대상에 같은 이름의 파일이 있으면 해당 파일의 복사가 중단됩니다.
-
-```powershell
-$SkillSource = (Resolve-Path -LiteralPath 'skills/speckit-start/SKILL.md').Path
-$SkillHomes = @(
-    (Join-Path $HOME '.agents/skills')
-    (Join-Path $HOME '.claude/skills')
-)
-
-foreach ($SkillHome in $SkillHomes) {
-    $SkillFolder = Join-Path $SkillHome 'speckit-start'
-    [System.IO.Directory]::CreateDirectory($SkillFolder) | Out-Null
-    [System.IO.File]::Copy($SkillSource, (Join-Path $SkillFolder 'SKILL.md'), $false)
-}
-```
-
-직접 복사할 때도 같은 경로를 사용합니다.
+이 저장소의 `skills/speckit-start` 폴더를 원하는 에이전트의 스킬 디렉터리에 복사하세요. `SKILL.md`와 `guard.py`가 같은 폴더에 있어야 합니다. 복사 전에 대상과 상위 경로에 심볼릭 링크나 정션이 없는지 확인하세요. 기존 설치를 갱신한다면 변경 내용을 검토한 뒤 두 파일을 함께 교체하세요.
 
 | 도구 | 사용자 스킬 경로 | 프로젝트 대화창에서 실행 |
 | --- | --- | --- |
@@ -45,6 +29,10 @@ foreach ($SkillHome in $SkillHomes) {
 
 이미 초기화된 프로젝트에서는 별도 선택이 없으면 현재 실행 중인 에이전트를 기준으로 확인합니다. 예를 들어 Codex가 연동된 프로젝트에서 Claude Code로 실행하면, 승인을 받은 뒤 공식 `specify integration install claude` 명령으로 Claude Code 연동을 추가합니다. 프로젝트의 기본 에이전트는 Codex로 유지되며, 두 에이전트는 같은 프로젝트의 Spec Kit 설정과 SDD 문서를 사용합니다. 준비된 프로젝트에서는 상태 확인만으로 끝납니다.
 
+### 변경 계획만 보기
+
+에이전트에 “`speckit-start`로 Codex와 Claude Code 설정의 변경 계획만 보여줘”라고 요청하세요. 대상 경로, 예정된 명령, 확인된 변경과 미리보기 후 확인할 항목을 출력합니다. 적용을 요청한 경우에는 먼저 임시 미리보기 승인을 받고, 실제 생성·갱신 경로에 대한 승인을 받은 뒤 프로젝트에 적용합니다. CLI 설치 계획은 uv 도구 환경, 런처, 캐시 위치를 표시합니다. uv가 해결할 개별 의존성 파일은 설치 시점에 결정됩니다.
+
 ## 문제 해결
 
 | 증상 | 확인할 사항 |
@@ -57,13 +45,23 @@ foreach ($SkillHome in $SkillHomes) {
 
 ## 검증
 
-Windows에서 Specify CLI와 두 에이전트가 설치된 상태로 아래 통합 테스트를 실행할 수 있습니다. `specify`가 PATH에 없으면 `-SpecifyCli`에 확인된 실행 파일의 절대 경로를 전달하세요. 각 테스트는 임시 디렉터리에서 실행됩니다.
+보안 테스트는 Python 표준 라이브러리와 PowerShell 7을 사용합니다. 승인과 충돌 처리, 경로 이탈 및 정션, 중복 실행, 외부 입력, 민감정보 환경변수, 실패 후 중단을 검증합니다.
 
 ```powershell
-./tests/smoke.ps1
+python -B -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-대화형 승인, 안전 중단, 재실행, 실패 처리와 클라이언트 내 스킬 인식은 [보안 테스트 시나리오](tests/security.md)에 따라 각 에이전트에서 확인합니다.
+기능 테스트는 공백과 한글이 포함된 임시 홈과 프로젝트에서 공식 Specify CLI를 사용합니다. Codex와 Claude Code의 단독 설정, 순서를 바꾼 두 에이전트 연동, 기존 설정과 문서 보존, 재실행을 확인합니다. 에이전트 실행 파일 감지에는 테스트용 실행 파일을 사용합니다.
+
+```powershell
+# 기존 CLI로 프로젝트 초기화와 에이전트 연동 검증
+./tests/smoke.ps1 -SpecifyCli (Get-Command specify -CommandType Application | Select-Object -First 1).Source
+
+# 신규 CLI 설치도 검증. 공식 PyPI 접근 필요
+./tests/smoke.ps1 -Uv (Get-Command uv -CommandType Application | Select-Object -First 1).Source
+```
+
+GitHub Actions는 push와 pull request에서 보안 검사와 Windows 기능 검사를 각각 실행합니다. 실제 클라이언트의 승인 UI와 스킬 인식은 [보안 테스트 시나리오](tests/security.md)를 따라 확인합니다.
 
 ## 공식 문서
 

@@ -1,0 +1,39 @@
+name: SpecKit-Start tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    name: Security checks
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run offline approval, path and failure tests
+        shell: pwsh
+        env:
+          SPECKIT_REQUIRE_REAL_JUNCTION: '1'
+        run: python -B -m unittest discover -s tests -p 'test_*.py' -v
+
+  functionality:
+    name: Windows CLI integration
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Install and exercise the official CLI in a temporary home
+        shell: pwsh
+        run: ./tests/smoke.ps1 -Uv (Get-Command uv -CommandType Application | Select-Object -First 1).Source
