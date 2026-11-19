@@ -6,10 +6,12 @@ import hashlib
 import io
 import zipfile
 import json
+import marshal
 import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -541,6 +543,45 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(options["env"]["PATH"], str(self.tool.parent.parent))
         for name in ("UV_INDEX", "UV_FIND_LINKS", "PYTHONPATH", "GITHUB_TOKEN"):
             self.assertNotIn(name, options["env"])
+        self.assertEqual(options["env"]["PYTHONDONTWRITEBYTECODE"], "1")
+        self.assertEqual(Path(options["env"]["PYTHONPYCACHEPREFIX"]).parent, self.tool)
+
+    def test_verified_launcher_reports_source_only_environment_and_unchecked_parts(self):
+        args, launcher, _ = self.uv_tool_args()
+        result = guard.run(args)
+        self.assertEqual(result["environment"], guard.source_only(launcher))
+        self.assertEqual(Path(result["environment"]["PYTHONPYCACHEPREFIX"]).parent, launcher)
+        self.assertEqual(
+            result["not_content_verified"], ["launcher executable", "Python interpreter", "dependencies"]
+        )
+
+    def test_planted_bytecode_is_not_executed_in_source_only_environment(self):
+        package = self.scratch / "모듈"
+        package.mkdir()
+        module = package / "checked.py"
+        module.write_text("print('source')\n", encoding="utf-8")
+        info = module.stat()
+        planted = Path(importlib.util.cache_from_source(str(module)))
+        planted.parent.mkdir()
+        planted.write_bytes(
+            importlib.util.MAGIC_NUMBER + (0).to_bytes(4, "little")
+            + (int(info.st_mtime) & 0xFFFFFFFF).to_bytes(4, "little")
+            + (info.st_size & 0xFFFFFFFF).to_bytes(4, "little")
+            + marshal.dumps(compile("print('planted')\n", str(module), "exec"))
+        )
+        script = "import sys; sys.path.insert(0, sys.argv[1]); import checked"
+        base = {name: value for name, value in os.environ.items() if not name.startswith("PYTHON")}
+
+        def output(extra):
+            return real_run(
+                [sys.executable, "-c", script, str(package)], env=base | extra,
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+
+        # The unprotected run shows the fixture is a working attack, not an ignored file.
+        self.assertEqual(output({"PYTHONDONTWRITEBYTECODE": "1"}), "planted")
+        self.assertEqual(output(guard.source_only(self.tool)), "source")
+        self.assertTrue(planted.is_file())
 
 
 if __name__ == "__main__":

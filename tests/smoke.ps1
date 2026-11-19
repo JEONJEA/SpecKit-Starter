@@ -40,6 +40,8 @@ function Invoke-Specify {
         if ($null -ne $Value) { $Start.EnvironmentVariables[$Key] = $Value }
     }
     $Start.EnvironmentVariables['PYTHONDONTWRITEBYTECODE'] = '1'
+    # Same as guard.py source_only: a cache location below a file can never hold bytecode.
+    $Start.EnvironmentVariables['PYTHONPYCACHEPREFIX'] = Join-Path $SpecifyCli 'no-bytecode'
     if ($null -ne $Start.PSObject.Properties['ArgumentList']) {
         foreach ($Argument in $args) { $Start.ArgumentList.Add($Argument) }
     } elseif ($env:OS -eq 'Windows_NT') {

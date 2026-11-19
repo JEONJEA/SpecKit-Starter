@@ -103,6 +103,16 @@ def same_path(left, right):
     return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
 
 
+def source_only(tool):
+    """Make Python children compile the checked sources instead of trusting cached bytecode.
+
+    A .pyc beside a module is loaded when its header matches the source's size and mtime,
+    so it can differ from the source that was verified. Moving the cache below a regular
+    file gives Python a location that cannot exist: nothing is read from it or written to it.
+    """
+    return {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONPYCACHEPREFIX": str(tool / "no-bytecode")}
+
+
 def read_regular(path, label):
     info = inspect(path)
     if not info or not stat.S_ISREG(info.st_mode):
@@ -418,6 +428,11 @@ def verify_uv_tool(args):
         "backing": str(backing),
         "index_source": index_source,
         "signature_required": False,
+        # Launch Specify with these so the files compared above are the code that runs.
+        "environment": source_only(launcher),
+        # RECORD sits beside the launcher it describes, so that match shows a consistent
+        # install, not an untampered one. Nothing below is compared with an official copy.
+        "not_content_verified": ["launcher executable", "Python interpreter", "dependencies"],
     }
 
 
@@ -682,9 +697,8 @@ def run(args):
         if (path := Path(entry)).is_absolute() and not path.is_relative_to(excluded)
     )
     env.update(plan.get("environment", {}))
-    env.update(
-        NoDefaultCurrentDirectoryInExePath="1", PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1",
-    )
+    env.update(NoDefaultCurrentDirectoryInExePath="1", PYTHONNOUSERSITE="1")
+    env.update(source_only(Path(plan["command"][0])))
     approval = plan_id(plan, env)
     report = {key: value for key, value in plan.items() if key not in {
         "identity", "executable_identity", "before",
